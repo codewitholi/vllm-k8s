@@ -1,0 +1,71 @@
+# Default values for llm-k8s.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+serviceAccount:
+  create: true
+vllm:
+  enabled: true
+  image:
+    pullPolicy: IfNotPresent
+    repository: "vllm/vllm-openai"
+    tag: "v0.11.0"
+  imagePullSecrets: []
+  params:
+    modelPath: ""
+    modelName: ""
+    gpuMemUtil: 0.85
+    # Maximum model length, e.g 120000
+    maxModelLen: -1.0
+    attentionBackend: "FLASH_ATTN"
+    # Number of GPUs to use
+    tensorParallel: 1
+    # Possible values: yarn
+    ropeScalingType: ""
+    # A float, example: 4.0
+    ropeScalingFactor: -1.0
+    # Original Max Context Size, a float
+    ropeOrigMax: -1.0
+    # Reasoning Parser: possible values: qwen3
+    reasoningParser: ""
+    tokenizer: ""
+    quantization: ""
+    tokenizerMode: ""
+    configFormat: ""
+    loadFormat: ""
+    toolCallParser: ""
+    enableToolChoice: 0.0
+    limitMmPerPrompt: ""
+    dtype: ""
+    hfHome: "/mnt/hfcache"
+    torchCudaArchList: "10.0 12.0"
+    cudaLaunchBlocking: "1"
+    pytorchCudaAllocConf: "expandable_segments:True"
+    torchNumThreads: -1.0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 1024Mi
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    # limits:
+    #   cpu: 100m
+    #   memory: 128Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+    #
+  service:
+    type: ClusterIP
+    port: 8000
+
+openwebui:
+  enabled: true
+  image:
+    pullPolicy: IfNotPresent
+    repository: "ghcr.io/open-webui/open-webui"
+    tag: "main"
+  service:
+    type: ClusterIP
+    port: 9000

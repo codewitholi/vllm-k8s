@@ -1,0 +1,35 @@
+{{- if .Values.vllm.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-hfcache
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llm-k8s.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce  # Can be shared by pods on same Node
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 200Gi
+{{- end }}
+
+{{- if .Values.openwebui.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-openwebui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llm-k8s.openwebui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce  # Can be shared by pods on same Node
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+{{- end }}

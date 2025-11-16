@@ -1,0 +1,225 @@
+{{- if .Values.vllm.enabled }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-vllm
+  labels:
+    {{- include "llm-k8s.vllm.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "llm-k8s.vllm.selectorLabels" . | nindent 6 }}
+  serviceName: {{ include "llm-k8s.fullname" . }}-vllm
+  template:
+    metadata:
+      labels:
+          {{- include "llm-k8s.vllm.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.vllm }}
+      runtimeClassName: nvidia
+      {{- with .imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "llm-k8s.serviceAccountName" $ }}
+      initContainers:
+        - name: ensure-cache-dir
+          image: busybox
+          command:
+          - sh
+          - -c
+          args: 
+          - |
+              chown 1000:1000 -R /mnt/hfcache
+          volumeMounts:
+          - mountPath: /mnt/hfcache
+            name: hf-cache
+      containers:
+        - name: vllm-server
+          image: "{{ .image.repository }}:{{ .image.tag }}"
+          imagePullPolicy: {{ .image.pullPolicy }}
+          command:
+          - vllm
+          - serve
+          env:
+            - name: HF_HOME
+              value: /mnt/hfcache
+            {{- if ne .params.torchCudaArchList "" }}
+            - name: TORCH_CUDA_ARCH_LIST
+              value: {{ .params.torchCudaArchList | quote }}
+            {{- end }}
+            {{- if ne .params.cudaLaunchBlocking "" }}
+            - name: CUDA_LAUNCH_BLOCKING
+              value: {{ .params.cudaLaunchBlocking | quote }}
+            {{- end }}
+            {{- if ne .params.pytorchCudaAllocConf "" }}
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: {{ .params.pytorchCudaAllocConf }}
+            {{- end }}
+            - name: VLLM_ATTENTION_BACKEND
+              value: {{ .params.attentionBackend }}
+            {{- if ne (default -1.0 .params.torchNumThreads) -1.0 }}
+            - name: OMP_NUM_THREADS
+              value:  {{ .params.torchNumThreads | quote }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: {{ .resources.requests.cpu | quote }}
+              memory: {{ .resources.requests.memory | quote  }}
+              nvidia.com/gpu: {{ .params.tensorParallel | quote }}
+            limits:
+              {{- with .resources.limits }}
+              {{- if ne (default "" .cpu) "" }}
+              cpu: {{ .cpu }}
+              {{- end }}
+              {{- if ne (default "" .memory) "" }}
+              memory: {{ .memory }}
+              {{- end }}
+              {{- end }}
+              nvidia.com/gpu: {{ .params.tensorParallel | quote }}
+          args:
+          {{- with .params }}
+          - {{ .modelPath }}
+          - --host
+          - "0.0.0.0"
+          - --served-model-name
+          - {{ .modelName }}
+          {{- if ne (default -1.0 .maxModelLen) -1.0 }}
+          - --max-model-len
+          - {{ .maxModelLen | quote }}
+          {{- end }}
+          - --gpu-memory-utilization
+          - {{ .gpuMemUtil | quote }}
+          {{- if ne (default "" .reasoningParser) "" }}
+          - --reasoning-parser
+          - {{ .reasoningParser }}
+          {{- end }}
+          {{- if ne (default "" .tokenizer) "" }}
+          - --tokenizer
+          - {{ .tokenizer }}
+          {{- end }}
+          {{- if ne (default "" .quantization) "" }}
+          - --quantization
+          - {{ .quantization }}
+          {{- end }}
+          {{- if ne (default "" .ropeScalingType) "" }}
+          - --rope-scaling
+          - '{"rope_type": "{{ .ropeScalingType }}", "factor": {{ .ropeScalingFactor }}, "original_max_position_embeddings": {{ .ropeOrigMmax }}}'
+          {{- end }}
+          {{- if (gt .tensorParallel  1.0) }}
+          - --tensor-parallel-size
+          - {{ .tensorParallel | quote }}
+          {{- end }}
+          {{- if ne (default "" .tokenizerMode) "" }}
+          - --tokenizer_mode
+          - {{ .tokenizerMode }}
+          {{- end }}
+          {{- if ne (default "" .configFormat) "" }}
+          - --config-format
+          - {{ .configFormat }}
+          {{- end }}
+          {{- if ne (default "" .loadFormat) "" }}
+          - --load-format
+          - {{ .loadFormat }}
+          {{- end }}
+          {{- if ne (default "" .toolCallParser) "" }}
+          - --tool-call-parser
+          - {{ .toolCallParser }}
+          {{- end }}
+          {{- if ne (default 0.0 .enableAutoToolChoice) 0.0 }}
+          - --enable-auto-tool-choice
+          {{- end }}
+          {{- if ne (default "" .limitMmPerPrompt) "" }}
+          - --limit_mm_per_prompt
+          - {{ .limitMmPerPrompt }}
+          {{- end }}
+          {{- if ne (default "" .dtype) "" }}
+          - --dtype
+          - {{ .dtype }}
+          {{- end }}
+          {{- end }}
+          ports:
+          - name: inference-http
+            containerPort: 8000  # Default vLLM port
+            protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60  # Healthcheck starts after 60s
+            periodSeconds: 3  # Check every 3 seconds
+          volumeMounts:
+          - mountPath: /dev/shm
+            name: dshm
+          - mountPath: /mnt/hfcache
+            name: hf-cache
+      {{- end }}
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 10Gi
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: {{ include "llm-k8s.fullname" . }}-hfcache
+{{- end }}
+
+{{- if .Values.openwebui.enabled }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-openwebui
+  labels:
+    {{- include "llm-k8s.openwebui.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "llm-k8s.openwebui.selectorLabels" . | nindent 6 }}
+  serviceName: ""
+  template:
+    metadata:
+      labels:
+          {{- include "llm-k8s.openwebui.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.openwebui }}
+      {{- with .imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "llm-k8s.serviceAccountName" $ }}
+      containers:
+        - name: openwebui-server
+          image: "{{ .image.repository }}:{{ .image.tag }}"
+          imagePullPolicy: "{{ .image.pullPolicy }}"
+          env:
+            - name: OPENAI_API_BASE_URL
+              value: "http://{{ include "llm-k8s.fullname" $ }}-llm-k8s-vllm-0.{{ include "llm-k8s.fullname" $ }}-llm-k8s-vllm.{{ $.Release.Namespace }}.svc.cluster.local:8000/v1"
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+          - name: ui-http
+            containerPort: 8080  # Default openwebui port
+            protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10  # Healthcheck starts after 60s
+            periodSeconds: 3  # Check every 3 seconds
+          volumeMounts:
+          - mountPath: /app/backend/data
+            name: openwebui-data
+      volumes:
+        - name: openwebui-data
+          persistentVolumeClaim:
+            claimName: {{ include "llm-k8s.fullname" $ }}-openwebui
+      {{- end }}
+{{- end }}

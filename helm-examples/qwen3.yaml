@@ -1,0 +1,12 @@
+vllm:
+  resources:
+    requests:
+      cpu: 2048m
+      memory: 10240Mi
+  params:
+    torchNumThreads: 16
+    modelPath: "Qwen/Qwen3-32B-AWQ"
+    modelName: cognitivecomputations/Qwen3-30B-A3B-AWQ
+    gpu_mem_util: 0.95
+    maxModelLen: 32768
+    reasoningParser: qwen3

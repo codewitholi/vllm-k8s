@@ -1,0 +1,40 @@
+{{- if .Values.vllm.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-vllm
+  labels:
+    {{- include "llm-k8s.vllm.labels" . | nindent 4 }}
+{{- with .Values.vllm }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "llm-k8s.vllm.selectorLabels" $ | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- if .Values.openwebui.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-k8s.fullname" . }}-openwebui
+  labels:
+    {{- include "llm-k8s.openwebui.labels" . | nindent 4 }}
+{{- with .Values.openwebui }}
+spec:
+  type: {{ .service.type }}
+  ports:
+    - port: {{ .service.port }}
+      targetPort: ui-http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "llm-k8s.openwebui.selectorLabels" $ | nindent 4 }}
+{{- end }}
+{{- end }}

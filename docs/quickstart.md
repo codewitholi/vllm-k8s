@@ -92,8 +92,8 @@ tar -zxvf nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz -C $HOME/.local
 7. Post Installation Steps
 
     ```bash
-    export PATH="/usr/local/cuda-12/bin:${PATH:+:${PATH}}"
-    export LD_LIBRARY_PATH="/usr/local/cuda-12/lib64:${LB_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    export PATH="/usr/local/cuda-13/bin:${PATH:+:${PATH}}"
+    export LD_LIBRARY_PATH="/usr/local/cuda-13/lib64:${LB_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     ```
 
     !!!note
@@ -129,7 +129,7 @@ tar -zxvf nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz -C $HOME/.local
 4. Configure containerd
 
     ```bash
-    sudo nvidia-ctk runtime configure --runtime=containerd
+    sudo nvidia-ctk runtime configure --runtime=containerd --config /var/lib/rancher/k3s/agent/etc/containerd/config.toml
     # Restart containerd
     sudo systemctl restart containerd
     ```
@@ -148,7 +148,7 @@ tar -zxvf nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz -C $HOME/.local
 6. Run a test GPU workload with nerdctl
 
     ```bash
-    export NV_CTR_IMAGE="docker.io/nvidia/cuda:12.8.1-base-ubuntu24.04"
+    export NV_CTR_IMAGE="docker.io/nvidia/cuda:13.0.2-base-ubuntu24.04"
     sudo ctr image pull $NV_CTR_IMAGE
     sudo ctr run --rm \
       --runc-binary=/usr/bin/nvidia-container-runtime \
@@ -157,3 +157,193 @@ tar -zxvf nerdctl-$NERDCTL_VERSION-linux-amd64.tar.gz -C $HOME/.local
       nvcudatest \
       nvidia-smi
     ```
+
+## Setup Kubernetes Device Plugin
+
+This allows Kubernetes to expose NVIDIA GPU as resources in Kubernetes.
+
+1. Create Nvidia Runtime Class
+
+    ```bash
+    tee nvidia-runtime-class.yaml <<EOF
+    apiVersion: node.k8s.io/v1
+    kind: RuntimeClass
+    metadata:
+      name: nvidia
+    handler: nvidia
+    EOF
+    ```
+
+    ```bash
+    sudo k3s kubectl apply -f nvidia-runtime-class.yaml
+    ```
+
+2. Install the plugin with Helm
+
+    ```bash
+    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia \
+    && helm repo update
+    
+    sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade -i --wait nvidiagpu \
+     -n gpu-operator --create-namespace \
+     --values gpu-operator.yaml \
+      nvidia/gpu-operator
+    ```
+
+3. Post installation
+
+    Verify that you can view GPUs present on the node, look for `nvidia.com/gpu.present=true` when describing node.
+
+    ```bash
+    sudo k3s kubectl describe node <NODE NAME> | grep "nvidia.com/gpu.present=true"
+    ```
+
+    Test that we can run a sample container that uses GPU
+
+    ```bash
+    tee test-gpu-pod.yaml <<EOF
+    # test-gpu-pod.yaml
+    apiVersion: v1
+    kind: Pod
+    metadata:
+     name: gpu-pod
+    spec:
+     restartPolicy: OnFailure
+     runtimeClassName: nvidia
+     containers:
+       - name: cuda-container
+         image: nvidia/cuda:12.8.1-base-ubuntu24.04
+         command: ["nvidia-smi"]
+         resources:
+           limits:
+             nvidia.com/gpu: 1 # requesting 1 GPU
+    EOF
+    ```
+
+    Start it with
+
+    ```bash
+    sudo k3s kubectl apply -f test-gpu-pod.yaml
+    ```
+
+    We can check its logs after it has finished deploying
+
+    ```bash
+    sudo k3s kubectl logs gpu-pod
+
+    ### SAMPLE OUTPUT
+    +-----------------------------------------------------------------------------------------+
+    | NVIDIA-SMI 570.172.08             Driver Version: 570.172.08     CUDA Version: 12.8     |
+    |-----------------------------------------+------------------------+----------------------+
+    | GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |                                                                                                 
+    | Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+    |                                         |                        |               MIG M. |
+    |=========================================+========================+======================|
+    |   0  NVIDIA GeForce RTX 5090        On  |   00000000:01:00.0  On |                  N/A |
+    |  0%   50C    P5             34W /  600W |    1390MiB /  32607MiB |      0%      Default |
+    |                                         |                        |                  N/A |
+    +-----------------------------------------+------------------------+----------------------+
+                                                                                             
+    +-----------------------------------------------------------------------------------------+
+    | Processes:                                                                              |
+    |  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+    |        ID   ID                                                               Usage      |
+    |=========================================================================================|
+    |  No running processes found                                                             |
+    +-----------------------------------------------------------------------------------------+
+    ```
+
+## Monitoring with Grafana / Prometheus
+
+We will use Prometheus and Grafana to monitor GPU usage metrics in the cluster. We can also use it to scrape metrics from vLLM down the road.
+
+1. Add the Prometheus Helm Chart Repo
+
+    ```bash
+    sudo helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && sudo helm repo update
+    ```
+
+2. Search for available versions
+
+    ```bash
+    sudo helm search repo kube-prometheus
+    ```
+
+3. Template out base values for configuration
+
+    ```bash
+    sudo helm inspect values prometheus-community/kube-prometheus-stack > kpm-values.yaml
+    ```
+
+4. Change the `serviceMonitorSelectorNilUsesHelmValues` option to `false` in the `kpm-values.yaml` file
+
+    ```bash
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ```
+
+5. Add scrape configs to allow Prometheus to scrape from gpu-operator metrics endpoint in the `kpm-values.yaml` file
+
+    ```bash
+    #
+    additionalScrapeConfigs:
+    - job_name: gpu-metrics
+      scrape_interval: 1s
+      metrics_path: /metrics
+      scheme: http
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - gpu-operator
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_endpoints_name]
+        action: drop
+        regex: .*-node-feature-discovery-master
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        action: replace
+        target_label: kubernetes_node
+    ```
+
+6. Install the `kube-prometheus` operator via Helm
+
+    ```bash
+    sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade -i kpm prometheus-community/kube-prometheus-stack --create-namespace --namespace kpm --values kpm-values.yaml
+    ```
+
+7. Retrieve the admin password for Grafana
+
+    ```bash
+    sudo k3s kubectl --namespace kpm get secrets kpm-grafana -o jsonpath="{.data.admin-password}" | base64 -d
+    ```
+
+8. In a new terminal / tmux window, port-forward the grafana service
+
+    ```bash
+    sudo k3s kubectl port-forward -n kpm svc/kpm-grafana 10100:80
+    ```
+
+    You can login to grafana dashboard at `http://127.0.0.1:10100`
+
+### Setup GPU Monitoring with DCGM
+
+1. Add the helm repo for DCGM exporter
+
+    ```bash
+    sudo helm repo add gpu-helm-charts \
+      https://nvidia.github.io/dcgm-exporter/helm-charts \
+      && sudo helm repo update
+    ```
+
+2. Install the DCGM Exporter
+
+    ```bash
+    sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml helm upgrade -i dcgm gpu-helm-charts/dcgm-exporter --namespace kpm
+    ```
+## References
+
+- k8s-device-plugin: [link](https://github.com/NVIDIA/k8s-device-plugin/)
+- Setting up monitoring with Grafana / Prometheus: [link](https://docs.nvidia.com/datacenter/cloud-native/gpu-telemetry/latest/kube-prometheus.html)
+
+## Todo
+
+Maybe use this Helm chart for GPU metrics: https://artifacthub.io/packages/helm/utkuozdemir/nvidia-gpu-exporter
